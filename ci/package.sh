@@ -8,7 +8,8 @@
 # Prints the release name (hamlib-<ver>-win-arm64) on stdout.
 set -euo pipefail
 SRC=${1:?usage: package.sh HAMLIB_SRC_DIR PREFIX DIST_DIR}
-PREFIX=${2:?}; DIST=${3:?}
+PREFIX=${2:?}
+DIST=$(realpath -m "${3:?}")   # absolute: used after cd below
 MP=${MINGW_PREFIX:?run from an MSYS2 CLANG* shell}
 
 # e.g. "Hamlib 4.7.3~rc 2026-11-14T22:39:38Z SHA=f788e348d 64-bit"
@@ -53,7 +54,7 @@ done
 } > "$stage/BUILDINFO.txt"
 
 mkdir -p "$DIST"
-(cd "$(dirname "$stage")" && 7z a -tzip -bso0 -bsp0 "$(realpath "$DIST")/$name.zip" "$name")
+(cd "$(dirname "$stage")" && 7z a -tzip -bso0 -bsp0 "$DIST/$name.zip" "$name")
 cp "$stage"/bin/libhamlib-*.dll "$DIST/"
 cp "$stage/BUILDINFO.txt" "$DIST/$name-BUILDINFO.txt"
 (cd "$DIST" && sha256sum *.zip *.dll > SHA256SUMS)
