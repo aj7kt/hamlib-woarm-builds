@@ -1,0 +1,106 @@
+name: Hamlib for Windows on Arm
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Hamlib branch, tag or commit to build (from HAMLIB_REPO)
+        default: lld-add-stdcall-alias
+      publish:
+        description: Publish a GitHub release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # Our fork: upstream Hamlib-4.7 plus the lld --add-stdcall-alias configure
+  # fix. Switch to Hamlib/Hamlib once that is upstream.
+  HAMLIB_REPO: aj7kt/Hamlib
+  HAMLIB_REF: ${{ inputs.ref || 'lld-add-stdcall-alias' }}
+
+jobs:
+  build:
+    runs-on: windows-11-arm
+    outputs:
+      name: ${{ steps.pkg.outputs.name }}
+    steps:
+      # Windows runners default to core.autocrlf=true, which breaks Hamlib's
+      # autotools shell scripts.
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HAMLIB_REPO }}
+          ref: ${{ env.HAMLIB_REF }}
+          path: hamlib
+          fetch-depth: 0        # tags, for git describe
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git make autoconf automake libtool texinfo
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-lld
+            mingw-w64-clang-aarch64-llvm-tools
+            mingw-w64-clang-aarch64-pkgconf
+            mingw-w64-clang-aarch64-autotools
+            mingw-w64-clang-aarch64-libtool
+            mingw-w64-clang-aarch64-libusb
+            mingw-w64-clang-aarch64-readline
+            mingw-w64-clang-aarch64-7zip
+
+      - name: Build
+        shell: msys2 {0}
+        run: bash ci/build.sh hamlib build install
+
+      - name: Test
+        shell: msys2 {0}
+        run: bash ci/test.sh install
+
+      - name: Package
+        id: pkg
+        shell: msys2 {0}
+        run: |
+          name=$(bash ci/package.sh hamlib install dist | tail -1)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: dist/
+
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.name }}
+          path: dist
+
+      - name: Publish (once per Hamlib commit)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.name }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; nothing to do"
+            exit 0
+          fi
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+            --title "$TAG" --notes-file dist/*-BUILDINFO.txt \
+            dist/*.zip dist/*.dll dist/SHA256SUMS
