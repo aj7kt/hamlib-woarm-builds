@@ -55,9 +55,43 @@ done
 for f in COPYING COPYING.LIB LICENSE README.md NEWS; do
   [ -f "$SRC/$f" ] && cp "$SRC/$f" "$stage/"
 done
+
+# Where the built commit stands relative to upstream Hamlib: the upstream
+# commit it is based on, any (fork) commits on top, and how far that base
+# is behind the upstream branch head at build time.
+UPSTREAM_REPO=${UPSTREAM_REPO:-Hamlib/Hamlib}
+UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-Hamlib-4.7}
+upstream_info () {
+  local head base n
+  if ! git -C "$SRC" fetch --quiet --no-tags "https://github.com/$UPSTREAM_REPO.git" \
+         "+refs/heads/$UPSTREAM_BRANCH:refs/upstream-info/head" 2>/dev/null; then
+    echo "upstream: $UPSTREAM_REPO $UPSTREAM_BRANCH: could not be fetched"
+    return
+  fi
+  head=$(git -C "$SRC" rev-parse refs/upstream-info/head)
+  base=$(git -C "$SRC" merge-base HEAD "$head") || {
+    echo "upstream: $UPSTREAM_REPO $UPSTREAM_BRANCH: no common history"; return; }
+  echo "upstream: $UPSTREAM_REPO $UPSTREAM_BRANCH @ $(git -C "$SRC" log -1 --date=short --format='%h (%cd) %s' "$base")"
+  n=$(git -C "$SRC" rev-list --count "$base..HEAD")
+  if [ "$n" -eq 0 ]; then
+    echo "  built from that upstream commit"
+  else
+    echo "  plus $n commit(s) not in upstream:"
+    git -C "$SRC" log --reverse --format='    %h %s' "$base..HEAD"
+  fi
+  n=$(git -C "$SRC" rev-list --count "$base..$head")
+  if [ "$n" -eq 0 ]; then
+    echo "  upstream $UPSTREAM_BRANCH has no newer commits"
+  else
+    echo "  upstream $UPSTREAM_BRANCH head $(git -C "$SRC" rev-parse --short=9 "$head") is $n commit(s) newer"
+  fi
+  git -C "$SRC" update-ref -d refs/upstream-info/head
+}
+
 {
   echo "Hamlib $ver ($(git -C "$SRC" describe --tags --always 2>/dev/null || echo "$sha"))"
   echo "source: $(git -C "$SRC" remote get-url origin 2>/dev/null || echo '?') $(git -C "$SRC" rev-parse HEAD)"
+  upstream_info
   echo "toolchain: $($CLANG --version | head -1)"
   echo "host: $(uname -sm)"
   echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
