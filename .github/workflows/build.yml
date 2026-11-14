@@ -24,70 +24,78 @@ env:
   HAMLIB_REF: ${{ inputs.ref || 'lld-add-stdcall-alias' }}
 
 jobs:
+  # Cross-compile on Linux: autotools/libtool run ~10x faster there than
+  # under MSYS2 on Windows.
   build:
-    runs-on: windows-11-arm
+    runs-on: ubuntu-24.04-arm
     outputs:
       name: ${{ steps.pkg.outputs.name }}
     steps:
-      # Windows runners default to core.autocrlf=true, which breaks Hamlib's
-      # autotools shell scripts.
-      - run: git config --global core.autocrlf false
-        shell: pwsh
+      - uses: actions/checkout@v7
 
-      - uses: actions/checkout@v4
-
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.HAMLIB_REPO }}
           ref: ${{ env.HAMLIB_REF }}
           path: hamlib
           fetch-depth: 0        # tags, for git describe
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANGARM64
-          update: true
-          install: >-
-            git make autoconf automake libtool texinfo
-            mingw-w64-clang-aarch64-clang
-            mingw-w64-clang-aarch64-lld
-            mingw-w64-clang-aarch64-llvm-tools
-            mingw-w64-clang-aarch64-pkgconf
-            mingw-w64-clang-aarch64-autotools
-            mingw-w64-clang-aarch64-libtool
-            mingw-w64-clang-aarch64-libusb
-            mingw-w64-clang-aarch64-readline
-            mingw-w64-clang-aarch64-7zip
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            autoconf automake libtool pkg-config make texinfo zip zstd xz-utils
+
+      - name: Set up llvm-mingw and the CLANGARM64 target libraries
+        run: bash ci/setup-cross.sh "$RUNNER_TEMP/tools"
 
       - name: Build
-        shell: msys2 {0}
-        run: bash ci/build.sh hamlib build install
-
-      - name: Test
-        shell: msys2 {0}
-        run: bash ci/test.sh install
+        run: |
+          source "$RUNNER_TEMP/tools/env.sh"
+          bash ci/build.sh hamlib build install
 
       - name: Package
         id: pkg
-        shell: msys2 {0}
         run: |
+          source "$RUNNER_TEMP/tools/env.sh"
+          export TARGET_PACKAGES_FILE="$RUNNER_TEMP/tools/target-packages.txt"
           name=$(bash ci/package.sh hamlib install dist | tail -1)
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          cat dist/SHA256SUMS
+          cat dist/*-BUILDINFO.txt dist/SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.pkg.outputs.name }}
           path: dist/
 
-  release:
+  # Run the result on real Windows on Arm.
+  test:
     needs: build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.name }}
+          path: dist
+
+      - name: Unpack
+        shell: pwsh
+        run: Expand-Archive dist/${{ needs.build.outputs.name }}.zip -DestinationPath unpacked
+
+      - name: Test
+        shell: pwsh
+        run: ./ci/test.ps1 -Bin unpacked/${{ needs.build.outputs.name }}/bin
+
+  release:
+    needs: [build, test]
     if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.name }}
           path: dist
