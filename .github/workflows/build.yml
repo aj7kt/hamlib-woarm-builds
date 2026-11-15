@@ -9,10 +9,6 @@ on:
       ref:
         description: Hamlib branch, tag or commit to build (from HAMLIB_REPO)
         default: lld-add-stdcall-alias
-      publish:
-        description: Publish a GitHub release
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -88,27 +84,70 @@ jobs:
         shell: pwsh
         run: ./ci/test.ps1 -Bin unpacked/${{ needs.build.outputs.name }}/bin
 
-  release:
+  # A standing *draft* release per branch of this repo (placeholder tag
+  # next-<branch>), updated in place by every successful push or manual
+  # build: same draft, new files, target and notes. Drafts are visible only
+  # to people with write access; nothing is public until you promote the
+  # draft: edit it, set the tag to the package name given in its notes
+  # (WS builds pin Hamlib by that tag) and publish. The next build then
+  # starts a new standing draft. Pull requests do not touch the draft.
+  draft:
     needs: [build, test]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    if: github.event_name != 'pull_request' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: standing-draft-${{ github.ref_name }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NAME: ${{ needs.build.outputs.name }}
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.name }}
           path: dist
 
-      - name: Publish (once per Hamlib commit)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.build.outputs.name }}
+      - name: Update the standing draft release
         run: |
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $TAG already exists; nothing to do"
-            exit 0
-          fi
-          gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
-            --title "$TAG" --notes-file dist/*-BUILDINFO.txt \
-            dist/*.zip dist/*.dll dist/SHA256SUMS
+          set -euo pipefail
+          R=$GITHUB_REPOSITORY
+          tag="next-${GITHUB_REF_NAME//\//-}"
+          title="Next Hamlib build: $NAME"
+          published=$(TAG="$NAME" gh release list -R "$R" --limit 200 --json tagName,isDraft \
+                        --jq '.[] | select(.tagName == env.TAG and (.isDraft | not)) | .tagName')
+          {
+            echo "**To release this build, set the tag to \`$NAME\` and publish.**"
+            if [ -n "$published" ]; then
+              echo
+              echo "> Note: \`$NAME\` is already published; this draft rebuilds the same Hamlib commit."
+            fi
+            echo
+            echo "Built by: $GITHUB_SERVER_URL/$R/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo '```'
+            cat dist/*-BUILDINFO.txt
+            echo
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "_Standing draft, replaced by every build of $GITHUB_REF_NAME._"
+          } > notes.md
+
+          state=$(TAG="$tag" gh release list -R "$R" --limit 200 --json tagName,isDraft \
+                    --jq '.[] | select(.tagName == env.TAG) | if .isDraft then "draft" else "published" end')
+          case "$state" in
+            published)
+              echo "::error::$tag is a published release; refusing to overwrite it"; exit 1 ;;
+            draft)
+              echo "updating standing draft $tag"
+              gh release edit "$tag" -R "$R" --target "$GITHUB_SHA" --title "$title" --notes-file notes.md
+              gh release view "$tag" -R "$R" --json assets --jq '.assets[].name' |
+                while read -r a; do gh release delete-asset "$tag" "$a" -R "$R" --yes; done
+              gh release upload "$tag" -R "$R" dist/*.zip dist/*.dll dist/SHA256SUMS ;;
+            *)
+              echo "creating standing draft $tag"
+              gh release create "$tag" -R "$R" --draft --target "$GITHUB_SHA" \
+                --title "$title" --notes-file notes.md dist/*.zip dist/*.dll dist/SHA256SUMS ;;
+          esac

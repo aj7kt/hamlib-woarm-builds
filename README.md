@@ -30,10 +30,18 @@ Each release (one per Hamlib commit) contains:
 | `libhamlib-4.dll` | the DLL on its own, for applications that let you swap it (needs `libusb-1.0.dll` and `libwinpthread-1.dll` next to it, which such applications already ship) |
 | `SHA256SUMS` | checksums of the above |
 
-Builds run on every push and pull request (artifacts only). A release is
-published by running the workflow manually with **publish** ticked; it is
-skipped if that Hamlib commit already has one. To pick up new upstream
-changes, sync/rebase the fork branch first.
+Builds never publish anything by themselves. Every successful push or
+manual build of a branch updates that branch's standing **draft** release
+(tag `next-<branch>`, e.g. `next-main`) in place with its files and notes;
+drafts are visible only to people with write access. Pull request builds
+only upload workflow artifacts.
+
+To release: run the workflow (Actions → *Hamlib for Windows on Arm* → Run
+workflow; pick the Hamlib ref), download the draft's files and test them,
+then edit the draft, set its tag to the package name its notes give (e.g.
+`hamlib-4.7.3-rc-f788e348d-win-arm64`; WS builds pin Hamlib by that tag)
+and publish. The next build starts a new standing draft. To pick up new
+upstream changes, sync/rebase the fork branch first.
 
 ## Local build
 
